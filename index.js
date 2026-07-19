@@ -18,6 +18,8 @@
  *                               (comment-preserving edit + backup; restart required).
  *                               enableServerPlugins can NOT be self-fixed: this plugin
  *                               only runs when that flag is already true.
+ *   POST /dump { meta, messages } -> saves the full outgoing prompt as JSON to
+ *                               prompt-dumps/prompt-<ts>.json (newest 10 kept)
  *   POST /log { line }       -> appends timestamped line to cache-verify.log
  *   GET  /log/tail?n=200     -> { ok, lines: [...] }
  */
@@ -28,7 +30,7 @@ const fsp = require('fs/promises');
 const path = require('path');
 const url = require('url');
 
-const VERSION = '1.1.0';
+const VERSION = '1.2.0';
 const PLUGIN_DIR = __dirname;
 // plugins/bf-cache-verify -> two levels up is the SillyTavern server root.
 const SERVER_ROOT = path.resolve(PLUGIN_DIR, '..', '..');
@@ -213,7 +215,8 @@ async function init(router) {
             }
 
             const genUrl = `https://openrouter.ai/api/v1/generation?id=${encodeURIComponent(id)}`;
-            const MAX_ATTEMPTS = 3;
+            // Generation stats can lag several seconds behind stream end.
+            const MAX_ATTEMPTS = 5;
             let lastStatus = 0;
             let lastBody = '';
 
@@ -231,7 +234,7 @@ async function init(router) {
                     // Network error: treat like a retryable failure.
                     lastStatus = 0;
                     lastBody = String(fetchErr.message ?? fetchErr);
-                    if (attempt < MAX_ATTEMPTS) { await sleep(1000); continue; }
+                    if (attempt < MAX_ATTEMPTS) { await sleep(1500); continue; }
                     break;
                 }
 
@@ -246,8 +249,7 @@ async function init(router) {
                 lastBody = await response.text().catch(() => '');
 
                 if (response.status === 404 && attempt < MAX_ATTEMPTS) {
-                    // Generation stats may lag 1-2s behind the completion.
-                    await sleep(1000);
+                    await sleep(1500);
                     continue;
                 }
                 break;
@@ -261,6 +263,41 @@ async function init(router) {
             });
         } catch (err) {
             console.error('[bf-cache-verify] /generation failed:', err);
+            res.status(500).json({ ok: false, error: String(err.message ?? err) });
+        }
+    });
+
+    router.post('/dump', async (req, res) => {
+        try {
+            const body = typeof req.body === 'object' && req.body !== null ? req.body : {};
+            if (!Array.isArray(body.messages)) {
+                return res.status(400).json({ ok: false, error: 'missing_messages' });
+            }
+            const dumpDir = path.join(PLUGIN_DIR, 'prompt-dumps');
+            await fsp.mkdir(dumpDir, { recursive: true });
+            const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+            const file = `prompt-${stamp}.json`;
+            await fsp.writeFile(
+                path.join(dumpDir, file),
+                JSON.stringify({
+                    savedAt: new Date().toISOString(),
+                    meta: body.meta ?? null,
+                    messageCount: body.messages.length,
+                    messages: body.messages,
+                }, null, 2),
+                'utf8',
+            );
+            // Keep only the newest 10 dumps (ISO names sort chronologically).
+            const entries = (await fsp.readdir(dumpDir))
+                .filter(f => f.startsWith('prompt-') && f.endsWith('.json'))
+                .sort();
+            for (const old of entries.slice(0, Math.max(0, entries.length - 10))) {
+                await fsp.unlink(path.join(dumpDir, old)).catch(() => { /* ignore */ });
+            }
+            await appendLogLine(`[dump] full prompt saved: prompt-dumps/${file} (${body.messages.length} messages)`);
+            res.json({ ok: true, file: `prompt-dumps/${file}` });
+        } catch (err) {
+            console.error('[bf-cache-verify] /dump failed:', err);
             res.status(500).json({ ok: false, error: String(err.message ?? err) });
         }
     });
