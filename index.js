@@ -14,6 +14,10 @@
  *   GET  /config             -> { ok, claude/effective: <boot-time values the running server uses>,
  *                                 file: <fresh parse of config.yaml>, restartRequired, raw }
  *   GET  /generation?id=X    -> proxied OpenRouter generation stats (retries 404 up to 3x, 1s apart)
+ *   POST /fix-config { cachingAtDepth } -> sets claude.cachingAtDepth in config.yaml
+ *                               (comment-preserving edit + backup; restart required).
+ *                               enableServerPlugins can NOT be self-fixed: this plugin
+ *                               only runs when that flag is already true.
  *   POST /log { line }       -> appends timestamped line to cache-verify.log
  *   GET  /log/tail?n=200     -> { ok, lines: [...] }
  */
@@ -24,7 +28,7 @@ const fsp = require('fs/promises');
 const path = require('path');
 const url = require('url');
 
-const VERSION = '1.0.0';
+const VERSION = '1.1.0';
 const PLUGIN_DIR = __dirname;
 // plugins/bf-cache-verify -> two levels up is the SillyTavern server root.
 const SERVER_ROOT = path.resolve(PLUGIN_DIR, '..', '..');
@@ -257,6 +261,41 @@ async function init(router) {
             });
         } catch (err) {
             console.error('[bf-cache-verify] /generation failed:', err);
+            res.status(500).json({ ok: false, error: String(err.message ?? err) });
+        }
+    });
+
+    router.post('/fix-config', async (req, res) => {
+        try {
+            const body = typeof req.body === 'object' && req.body !== null ? req.body : {};
+            const depth = (Number.isInteger(body.cachingAtDepth) && body.cachingAtDepth >= 0 && body.cachingAtDepth <= 128)
+                ? body.cachingAtDepth
+                : 2;
+
+            const YAML = getYaml();
+            const text = fs.readFileSync(CONFIG_YAML_PATH, 'utf8');
+            // parseDocument keeps comments and formatting intact on re-serialize.
+            const doc = YAML.parseDocument(text);
+            const from = doc.getIn(['claude', 'cachingAtDepth']);
+
+            const backupName = 'config.yaml.bak-bfcv';
+            fs.writeFileSync(path.join(SERVER_ROOT, backupName), text, 'utf8');
+
+            doc.setIn(['claude', 'cachingAtDepth'], depth);
+            fs.writeFileSync(CONFIG_YAML_PATH, doc.toString(), 'utf8');
+
+            await appendLogLine(`[fix-config] claude.cachingAtDepth: ${String(from)} -> ${depth} (backup: ${backupName}; ST restart required)`);
+            res.json({
+                ok: true,
+                changed: from !== depth,
+                from: from ?? null,
+                to: depth,
+                backup: backupName,
+                // The running server keeps its boot-time value until restart.
+                restartRequired: true,
+            });
+        } catch (err) {
+            console.error('[bf-cache-verify] /fix-config failed:', err);
             res.status(500).json({ ok: false, error: String(err.message ?? err) });
         }
     });

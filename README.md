@@ -41,6 +41,7 @@ Base URL: `/api/plugins/bf-cache-verify` (requires ST session cookie + `X-CSRF-T
 | GET    | `/probe`             | `{ ok: true, version }` — reachability check |
 | GET    | `/config`            | `{ ok, claude: { cachingAtDepth, enableSystemPromptCache, extendedTTL }, raw }` parsed live from config.yaml |
 | GET    | `/generation?id=X`   | Proxies `https://openrouter.ai/api/v1/generation?id=X` using the OpenRouter key from ST secrets. Retries up to 3x with 1s delay on 404. Returns `{ ok, data: { cache_discount, tokens_prompt, ... } }`, or `{ ok:false, error:'no_key' }` if no OpenRouter key is stored. |
+| POST   | `/fix-config` `{ "cachingAtDepth": 2 }` | Sets `claude.cachingAtDepth` in `config.yaml` (comment-preserving edit; backup written to `config.yaml.bak-bfcv`). Returns `{ ok, from, to, backup, restartRequired: true }` — the running server keeps its boot-time value until restart. Note: `enableServerPlugins` cannot be self-fixed (this plugin only runs when it is already `true`). |
 | POST   | `/log` `{ "line": "..." }` | Appends a timestamped line to `cache-verify.log` (capped at ~2 MB; oldest half is dropped when exceeded) |
 | GET    | `/log/tail?n=200`    | `{ ok, lines: [...] }` — last n log lines |
 
