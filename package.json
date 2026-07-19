@@ -1,0 +1,8 @@
+{
+    "name": "bf-cache-verify",
+    "version": "1.0.0",
+    "description": "SillyTavern server plugin: verify Claude prompt caching via OpenRouter (config exposure, generation-stats proxy, live log).",
+    "main": "index.js",
+    "type": "commonjs",
+    "private": true
+}
